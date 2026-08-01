@@ -1,13 +1,25 @@
-import { DirectFileManipulator, FileInfo, MetaEntry, ReadyEntry } from "./lib/src/API/DirectFileManipulatorV2.ts";
-import { FilePathWithPrefix, LOG_LEVEL_NOTICE, MILESTONE_DOCID, TweakValues } from "./lib/src/common/types.ts";
+import { DirectFileManipulator } from "@vrtmrz/livesync-commonlib";
+import {
+    type FilePathWithPrefix,
+    MILESTONE_DOCID,
+    type TweakValues,
+} from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { PeerCouchDBConf, FileData } from "./types.ts";
-import { decodeBinary } from "./lib/src/string_and_binary/convert.ts";
-import { isPlainText } from "./lib/src/string_and_binary/path.ts";
+import { decodeBinary } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/convert";
+import { isPlainText } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/path";
 import { DispatchFun, Peer, PeerHealth } from "./Peer.ts";
-import { createBinaryBlob, createTextBlob, isDocContentSame, unique } from "./lib/src/common/utils.ts";
+import {
+    createBinaryBlob,
+    createTextBlob,
+    isDocContentSame,
+    unique,
+} from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import { minimatch } from "minimatch";
-import { PouchDB } from "./lib/src/pouchdb/pouchdb-http.ts";
 import { promiseWithResolver } from "octagonal-wheels/promises";
+import { LOG_LEVEL_NOTICE } from "octagonal-wheels/common/logger";
+
+type ManipulatorMetaEntry = Parameters<DirectFileManipulator["getByMeta"]>[0];
+type ManipulatorReadyEntry = Awaited<ReturnType<DirectFileManipulator["getByMeta"]>>;
 
 // export class PeerInstance()
 
@@ -20,15 +32,13 @@ export class PeerCouchDB extends Peer {
     constructor(conf: PeerCouchDBConf, dispatcher: DispatchFun) {
         super(conf, dispatcher);
         // The manipulator is built lazily in start(), only after a probe confirms
-        // CouchDB is reachable. Building it here would fire its one-shot init
-        // against a possibly-down CouchDB (an unhandled rejection) and then be
-        // discarded and rebuilt on the first successful connect.
+        // CouchDB is reachable. Building it here would start its one-shot init
+        // against a possibly-down CouchDB, then discard and rebuild it on the
+        // first successful connection.
     }
-    // (Re)create the underlying DirectFileManipulator. Its constructor kicks off a
-    // one-shot async DB init whose `ready` promise never resolves (and whose
-    // rejection is unhandled) when CouchDB is unreachable, so recovering from a
-    // failed connect requires a *fresh* manipulator, not re-awaiting the old,
-    // permanently-pending one.
+    // (Re)create the underlying DirectFileManipulator. Its constructor starts a
+    // one-shot async database initialisation. Recovering from a failed attempt
+    // requires a fresh manipulator because its `ready` promise remains settled.
     private _buildManipulator(): void {
         // Release the previous instance if we're rebuilding. Each retry that gets
         // past the probe but fails to connect (CouchDB reachable but e.g. a config
@@ -36,14 +46,10 @@ export class PeerCouchDB extends Peer {
         // leak. Best-effort and fire-and-forget — it may be mid-init, and we don't
         // want to block the connect path (or fail it) on teardown.
         const prev = this.man as DirectFileManipulator | undefined;
-        this.man = new DirectFileManipulator(this.config);
-        // Use Deno's native fetch to bypass node:http shim issues with Traefik/long-polling
-        this.man.$$createPouchDBInstance = <T extends object>(): PouchDB.Database<T> => {
-            return new PouchDB(this.man.options.url + "/" + this.man.options.database, {
-                auth: { username: this.man.options.username, password: this.man.options.password },
-                fetch: (url: string | Request, opts?: RequestInit) => globalThis.fetch(url, opts),
-            }) as PouchDB.Database<T>;
-        };
+        this.man = new DirectFileManipulator(this.config, {
+            // Bypass node:http compatibility shims for Deno, Traefik, and long-polling connections.
+            fetch: (request, init) => globalThis.fetch(request, init),
+        });
         // Fetch remote since.
         this.man.since = this.getSetting("since") || "now";
         if (prev) void prev.close().catch(() => {});
@@ -69,13 +75,13 @@ export class PeerCouchDB extends Peer {
             return false;
         }
         const type = isPlainText(path) ? "plain" : "newnote";
-        const info: FileInfo = {
+        const info = {
             ctime: data.ctime,
             mtime: data.mtime,
             size: data.size
         };
         const saveData = (data.data instanceof Uint8Array) ? createBinaryBlob(data.data) : createTextBlob(data.data);
-        const old = await this.man.get(path as FilePathWithPrefix, true) as false | MetaEntry;
+        const old = await this.man.get(path as FilePathWithPrefix, true) as false | ManipulatorMetaEntry;
         // const old = await this.getMeta(path as FilePathWithPrefix);
         if (old && Math.abs(this.compareDate(info, old)) < 3600) {
             const oldDoc = await this.man.getByMeta(old);
@@ -98,7 +104,7 @@ export class PeerCouchDB extends Peer {
     async get(pathSrc: FilePathWithPrefix): Promise<false | FileData> {
         await this._started.promise;
         const path = this.toLocalPath(pathSrc) as FilePathWithPrefix;
-        const ret = await this.man.get(path) as false | ReadyEntry;
+        const ret = await this.man.get(path) as false | ManipulatorReadyEntry;
         if (ret === false) {
             return false;
         }
@@ -113,7 +119,7 @@ export class PeerCouchDB extends Peer {
     async getMeta(pathSrc: FilePathWithPrefix): Promise<false | FileData> {
         await this._started.promise;
         const path = this.toLocalPath(pathSrc) as FilePathWithPrefix;
-        const ret = await this.man.get(path, true) as false | MetaEntry;
+        const ret = await this.man.get(path, true) as false | ManipulatorMetaEntry;
         if (ret === false) {
             return false;
         }
@@ -164,9 +170,8 @@ export class PeerCouchDB extends Peer {
         }
     }
 
-    // Wait for the manipulator's one-shot init, but bounded: its `ready` promise
-    // hangs forever if init failed, so race it against a timeout to turn a hang
-    // into a retriable failure.
+    // Bound the manipulator's one-shot initialisation so a transport which accepts
+    // the request but never answers becomes a retriable failure.
     private _waitReady(timeoutMs: number): Promise<void> {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<never>((_, reject) => {

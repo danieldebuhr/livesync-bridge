@@ -23,7 +23,7 @@ Of course, it is multi-directional!
 1. Clone the GitHub Repository
 
 ```git
-git clone --recursive https://github.com/vrtmrz/livesync-bridge
+git clone https://github.com/vrtmrz/livesync-bridge
 ```
 
 2. Open the config file dat/config.sample.json, edit and save to
@@ -73,7 +73,7 @@ The configuration file consists of the following structure.
       "customChunkSize": 100,
       "minimumChunkSize": 20,
       "passphrase": "passphrase", // E2EE passphrase, if you do not enabled, leave it blank.
-      "obfuscatePassphrase": "passphrase", // Path obfuscation passphrase, if you do not enabled, leave it blank. if enabled, set the same value of passphrase.
+      "obfuscatePassphrase": "passphrase", // Path obfuscation passphrase. Leave blank to disable it; this may differ from passphrase.
       "baseDir": "blog/", // Sharing folder
       "includeInternal": [".claude/**"], // Opt-in glob patterns for internal/hidden files (see caution below). Omit to keep the default of skipping them.
       "useRemoteTweaks":true // Overwrite customChunkSize or minimumChunkSize, and check configuration matches
@@ -186,7 +186,7 @@ Totally, all files are synchronized like this:
       "username": "cornbread",
       "password": "tackle",
       "passphrase": "glucose", // E2EE passphrase, if you do not enabled, leave it blank.
-      "obfuscatePassphrase": "glucose", // Path obfuscation passphrase, if you do not enabled, leave it blank. if enabled, set the same value of passphrase.
+      "obfuscatePassphrase": "glucose", // Path obfuscation passphrase. Leave blank to disable it; this may differ from passphrase.
       "customChunkSize": 100,
       "minimumChunkSize": 20,
       "baseDir": "shared/" // Sharing folder
@@ -199,7 +199,7 @@ Totally, all files are synchronized like this:
       "username": "common_user",
       "password": "resu_nommoc",
       "passphrase": "cocoa", // E2EE passphrase, if you do not enabled, leave it blank.
-      "obfuscatePassphrase": "cocoa", // Path obfuscation passphrase, if you do not enabled, leave it blank. if enabled, set the same value of passphrase.
+      "obfuscatePassphrase": "cocoa", // Path obfuscation passphrase. Leave blank to disable it; this may differ from passphrase.
       "customChunkSize": 100,
       "minimumChunkSize": 20,
       "baseDir": "" // Sharing folder
