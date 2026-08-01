@@ -1,8 +1,7 @@
-import { defaultLoggerEnv } from "./lib/src/common/logger.ts";
-import { LOG_LEVEL_DEBUG } from "./lib/src/common/logger.ts";
+import { defaultLoggerEnv, LOG_LEVEL_DEBUG } from "octagonal-wheels/common/logger";
 import { Hub } from "./Hub.ts";
 import { Config } from "./types.ts";
-import { parseArgs } from "jsr:@std/cli";
+import { parseArgs } from "@std/cli";
 import { dirname } from "@std/path";
 
 // Last-resort safety net for a long-running sync daemon. A transient backend

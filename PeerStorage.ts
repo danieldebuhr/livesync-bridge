@@ -1,16 +1,20 @@
-import { LOG_LEVEL_INFO, LOG_LEVEL_NOTICE, LOG_LEVEL_VERBOSE } from "./lib/src/common/types.ts";
 import { PeerStorageConf, FileData } from "./types.ts";
-import { Logger } from "./lib/src/common/logger.ts";
-import { delay, getDocData } from "./lib/src/common/utils.ts";
-import { isPlainText } from "./lib/src/string_and_binary/path.ts";
+import { delay, getDocData } from "@vrtmrz/livesync-commonlib/compat/common/utils";
+import { isPlainText } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/path";
 import { parse, format, relative, dirname, resolve } from "@std/path";
-import { format as posixFormat, parse as posixParse } from "@std/path/posix"
+import { format as posixFormat, parse as posixParse } from "@std/path/posix";
 import { scheduleOnceIfDuplicated } from "octagonal-wheels/concurrency/lock";
 import { DispatchFun, Peer, PeerHealth } from "./Peer.ts";
 import chokidar from "chokidar";
-import { walk } from 'fs/walk';
+import { walk } from "fs/walk";
 
 import { scheduleTask } from "octagonal-wheels/concurrency/task";
+import {
+    Logger,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_NOTICE,
+    LOG_LEVEL_VERBOSE,
+} from "octagonal-wheels/common/logger";
 
 export class PeerStorage extends Peer {
     declare config: PeerStorageConf;

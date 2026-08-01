@@ -1,10 +1,8 @@
-import { join as joinPosix } from "jsr:@std/path/posix";
-import type { FileInfo } from "./lib/src/API/DirectFileManipulatorV2.ts";
-
-import { FilePathWithPrefix, LOG_LEVEL, LOG_LEVEL_DEBUG, LOG_LEVEL_INFO } from "./lib/src/common/types.ts";
+import { join as joinPosix } from "@std/path/posix";
+import type { FilePathWithPrefix } from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { PeerConf, FileData } from "./types.ts";
-import { Logger } from "octagonal-wheels/common/logger.js";
-import { LRUCache } from "octagonal-wheels/memory/LRUCache.js"
+import { Logger, LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, type LOG_LEVEL } from "octagonal-wheels/common/logger";
+import { LRUCache } from "octagonal-wheels/memory/LRUCache";
 import { computeHash } from "./util.ts";
 
 export type DispatchFun = (source: Peer, path: string, data: FileData | false) => Promise<void>;
@@ -123,7 +121,7 @@ export abstract class Peer {
     getSetting(key: string) {
         return localStorage.getItem(this._getKey(key));
     }
-    compareDate(a: FileInfo, b: FileInfo) {
+    compareDate(a: { mtime?: number }, b: { mtime?: number }) {
         const aMTime = ~~(a?.mtime ?? 0 / 1000);
         const bMTime = ~~(b?.mtime ?? 0 / 1000);
         return aMTime - bMTime;

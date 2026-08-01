@@ -1,4 +1,4 @@
-import type { DirectFileManipulatorOptions } from "./lib/src/API/DirectFileManipulator.ts";
+import type { DirectFileManipulatorOptions } from "@vrtmrz/livesync-commonlib";
 
 export interface Config {
     peers: PeerConf[];
