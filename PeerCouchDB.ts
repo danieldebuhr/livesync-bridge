@@ -65,6 +65,13 @@ export class PeerCouchDB extends Peer {
     // connection dead. PouchDB requests heartbeat newlines every ~10s, so a healthy
     // but idle feed still produces traffic well within this window.
     private static readonly CHANGES_IDLE_TIMEOUT_MS = 90_000;
+    // How long without any _changes traffic makes the watch "stalled" for health
+    // purposes. Generous against the 90s idle abort plus the watch's own 10s
+    // reconnect: a feed that self-heals produces traffic again well inside this.
+    private static readonly CHANGES_STALL_MS = 240_000;
+    // Last time the _changes feed produced anything (headers, heartbeat newline, or
+    // a change). 0 = the feed never ran, so there is nothing to judge yet.
+    private _feedSeenAt = 0;
     private _fetchWithIdleTimeout(request: Request | URL | string, init?: RequestInit): Promise<Response> {
         const url = typeof request === "string" ? request : (request instanceof URL ? request.href : request.url);
         if (!url.includes("/_changes")) return globalThis.fetch(request, init);
@@ -76,6 +83,9 @@ export class PeerCouchDB extends Peer {
         }
         let timer: ReturnType<typeof setTimeout> | undefined;
         const arm = () => {
+            // Every re-arm is proof the feed is alive; health() reads this to tell a
+            // working watch from one that died without the library noticing.
+            this._feedSeenAt = Date.now();
             clearTimeout(timer);
             timer = setTimeout(() => {
                 this.normalLog(`_changes feed idle for ${PeerCouchDB.CHANGES_IDLE_TIMEOUT_MS / 1000}s — aborting dead connection.`, LOG_LEVEL_NOTICE);
@@ -397,14 +407,32 @@ export class PeerCouchDB extends Peer {
     // self-healing reconnect makes ok=false, but the Quadlet healthcheck's retry
     // window (3 × 30s) absorbs that, so it doesn't cause a restart. backendUp is
     // only asserted here when we're syncing; probeHealth() refines it otherwise.
+    //
+    // `watching` alone is not enough: the flag lives in the library and is only
+    // cleared by the changes feed's own `complete`/`error` events. An aborted feed
+    // (our idle timeout) can end without either firing — then the library never
+    // reconnects, the flag stays true, and the pull side is dead while pushes keep
+    // working, so nothing looks wrong (observed on cv 2026-08-12: feed aborted at
+    // 03:01, no pull for 9h, health said "watching" the whole time). So we judge the
+    // feed by traffic: no bytes on _changes for CHANGES_STALL_MS while we believe we
+    // are watching = stalled → ok=false → probeHealth's grace window plus the
+    // backend probe turn that into restartWorthy, and the watchdog's restart resumes
+    // from the persisted seq checkpoint gap-free.
     override health(): PeerHealth {
         const watching = this.man?.watching === true;
-        const syncing = this._connected && (watching || this._remoteEmpty);
+        const stalled = watching && this._feedSeenAt !== 0 &&
+            (Date.now() - this._feedSeenAt > PeerCouchDB.CHANGES_STALL_MS);
+        const syncing = this._connected && ((watching && !stalled) || this._remoteEmpty);
+        const staleFor = Math.round((Date.now() - this._feedSeenAt) / 1000);
         return {
             name: this.config.name,
             type: "couchdb",
             ok: syncing,
-            detail: !this._connected ? "connecting" : (watching ? "watching" : (this._remoteEmpty ? "connected (empty remote)" : "reconnecting")),
+            detail: !this._connected
+                ? "connecting"
+                : (stalled
+                    ? `watch stalled (no _changes traffic for ${staleFor}s)`
+                    : (watching ? "watching" : (this._remoteEmpty ? "connected (empty remote)" : "reconnecting"))),
             backendUp: syncing,
             restartWorthy: false,
         };
