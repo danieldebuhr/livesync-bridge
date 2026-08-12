@@ -109,6 +109,13 @@ export abstract class Peer {
         this.cache.set(path, d);
         return false;
     }
+    // Drop what isRepeating() remembered for a path. isRepeating() caches the content
+    // hash as a side effect of *checking*, so after a failed send the unsent content
+    // counts as "already seen" and a retry in the same process would be swallowed as a
+    // repeat. The LRU cache has no delete, so store a value no real hash can equal.
+    forgetRepetition(path: string) {
+        this.cache.set(path, "");
+    }
     receiveLog(message: string, level?: LOG_LEVEL) {
         Logger(`[${this.config.name}] <-- ${message}`, level ?? LOG_LEVEL_INFO);
     }

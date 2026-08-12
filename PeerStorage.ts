@@ -164,18 +164,43 @@ export class PeerStorage extends Peer {
         const data = await this.get(path);
 
         if (data === false) return;
+        // Stat of exactly the version we just read, so a success records *that*
+        // version rather than whatever the file looks like once the upload returns.
+        // Erring towards an older stat is the safe direction: it may re-send a file
+        // once, whereas a newer stat would mark an unsent edit as synced.
+        const sentStat = await Deno.stat(this.toStoragePath(this.toLocalPath(path))).catch(() => undefined);
 
         scheduleOnceIfDuplicated(pathSrc, async () => {
-            // console.log(data);
-            await this.writeFileStat(path);
             await delay(250);
-            if (!await this.isRepeating(path, data)) {
-                this.sendLog(`${path} change detected`);
-                await this.dispatchToHub(this, this.toGlobalPath(path), data);
+            if (await this.isRepeating(path, data)) {
+                // Nothing to send — this content was already handled for this path
+                // (our own write of an incoming change, or a second watcher event for
+                // the same edit). Deliberately do NOT record the version here: while a
+                // first send is still in flight or has failed, "same content" proves
+                // nothing about the remote, and recording it would re-create exactly
+                // the data loss this method guards against (observed while testing on
+                // 2026-08-12: chokidar fired twice, the second, repeating dispatch
+                // marked the file synced while the real upload was still hanging).
+                // The version is recorded by the successful send below, or by put()
+                // when we wrote the file from an incoming change.
+                return;
             }
-            // else {
-            //     this.sendLog(`${path} change repeating detected`);
-            // }
+            this.sendLog(`${path} change detected`);
+            try {
+                await this.dispatchToHub(this, this.toGlobalPath(path), data);
+            } catch (ex) {
+                // Upload failed — classically CouchDB unreachable mid-edit. Until
+                // 2026-08-12 the stat had already been written *before* the upload, so
+                // isChanged() reported "unchanged" forever and the offline scan skipped
+                // the file: the edit stayed local-only and survived three restarts
+                // unnoticed. Forget the version instead, so it is retried.
+                this.forgetFileStat(path);
+                this.forgetRepetition(path);
+                this.sendLog(`${path} change NOT sent — kept as pending, retried on the next scan`, LOG_LEVEL_NOTICE);
+                Logger(ex, LOG_LEVEL_VERBOSE);
+                return;
+            }
+            await this.writeFileStat(path, sentStat);
         });
     }
     async dispatchDeleted(pathSrc: string) {
@@ -185,7 +210,19 @@ export class PeerStorage extends Peer {
             await delay(250);
             if (!await this.isRepeating(path, false)) {
                 this.sendLog(`${path} delete detected`);
-                await this.dispatchToHub(this, this.toGlobalPath(path), false);
+                try {
+                    await this.dispatchToHub(this, this.toGlobalPath(path), false);
+                } catch (ex) {
+                    // A lost deletion cannot be recovered the way a lost edit can: the
+                    // file is gone locally, so the offline scan (which walks existing
+                    // files) will never see it again. The note stays alive on the other
+                    // devices and can reappear here on its next change. So make the
+                    // failure loud instead of letting it vanish into a rejection log —
+                    // a real retry queue is still missing.
+                    this.forgetRepetition(path);
+                    this.sendLog(`${path} DELETE LOST — not sent to the others, delete it there too`, LOG_LEVEL_NOTICE);
+                    Logger(ex, LOG_LEVEL_VERBOSE);
+                }
             }
         });
 
@@ -212,6 +249,15 @@ export class PeerStorage extends Peer {
         }
         const fileStat = `${stat.mtime?.getTime() ?? 0}-${stat.size}`;
         this.setSetting(key, fileStat);
+    }
+
+    // Forget the remembered version of a path, so isChanged() reports it as changed
+    // again and the offline scan picks it up on the next start. Used when an upload
+    // failed: remembering a version we never managed to send would silently drop the
+    // edit. (No removeItem here — isChanged() treats an empty value as "unknown".)
+    forgetFileStat(pathSrc: string) {
+        const lp = this.toLocalPath(pathSrc);
+        this.setSetting(`file-stat-${lp}`, "");
     }
 
     async isChanged(pathSrc: string) {
@@ -297,6 +343,19 @@ export class PeerStorage extends Peer {
         this.watcher = chokidar.watch(lP,
             {
                 ignoreInitial: !this.config.scanOfflineChanges,
+                // LOKALER PATCH (Daniel): Storage-Peer zeigt hier auf das ECHTE ~/Obsidian
+                // (inkl. .obsidian/, .git/, .trash/). Die Sende-Seite prefixt interne
+                // Dateien NICHT mit "i:" -> sie wuerden als normale Docs nach CouchDB
+                // gepusht und das notes-only-Invariant aller Geraete brechen.
+                // Darum: jedes Pfadsegment, das mit "." beginnt, ignorieren.
+                // Zusaetzlich das Plugin-Debug-Log (livesync_log_*.md, geraete-lokales
+                // Rauschen, wird gross -> sprengt _bulkDocs) ausschliessen.
+                ignored: (p) => {
+                    const segs = p.split(/[/\\]/);
+                    if (segs.some((seg) => seg.length > 1 && seg.startsWith("."))) return true;
+                    const base = segs[segs.length - 1] || "";
+                    return base.startsWith("livesync_log_");
+                },
                 awaitWriteFinish: {
                     stabilityThreshold: 500,
                 },
