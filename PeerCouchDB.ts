@@ -71,8 +71,11 @@ export class PeerCouchDB extends Peer {
     // purposes. Generous against the 90s idle abort plus the watch's own 10s
     // reconnect: a feed that self-heals produces traffic again well inside this.
     private static readonly CHANGES_STALL_MS = 240_000;
-    // Last time the _changes feed produced anything (headers, heartbeat newline, or
-    // a change). 0 = the feed never ran, so there is nothing to judge yet.
+    // Last time the _changes feed delivered a byte (heartbeat newline or a change),
+    // or, before the first byte, when the watch was started. 0 = no watch yet, so
+    // there is nothing to judge. Deliberately NOT refreshed when a request is merely
+    // *sent*: a reconnect loop that keeps asking and never gets an answer would
+    // otherwise look alive forever (seen 2026-08-12 while testing a blocked tunnel).
     private _feedSeenAt = 0;
     private _fetchWithIdleTimeout(request: Request | URL | string, init?: RequestInit): Promise<Response> {
         const url = typeof request === "string" ? request : (request instanceof URL ? request.href : request.url);
@@ -85,9 +88,6 @@ export class PeerCouchDB extends Peer {
         }
         let timer: ReturnType<typeof setTimeout> | undefined;
         const arm = () => {
-            // Every re-arm is proof the feed is alive; health() reads this to tell a
-            // working watch from one that died without the library noticing.
-            this._feedSeenAt = Date.now();
             clearTimeout(timer);
             timer = setTimeout(() => {
                 this.normalLog(`_changes feed idle for ${PeerCouchDB.CHANGES_IDLE_TIMEOUT_MS / 1000}s — aborting dead connection.`, LOG_LEVEL_NOTICE);
@@ -102,7 +102,10 @@ export class PeerCouchDB extends Peer {
             }
             arm();
             const monitored = res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-                transform(chunk, controller) {
+                transform: (chunk, controller) => {
+                    // A delivered byte is the only thing that proves the feed lives —
+                    // both for the idle timer and for health()'s stall check.
+                    this._feedSeenAt = Date.now();
                     arm();
                     controller.enqueue(chunk);
                 },
@@ -348,6 +351,10 @@ export class PeerCouchDB extends Peer {
                 this.setSetting("since", this.man.since);
             }
             this.normalLog(`Watch starting from ${this.man.since || "the first"}`);
+            // Start the liveness clock here: from now on health() expects the feed to
+            // deliver bytes. Without this the check would stay disabled forever on a
+            // watch that never receives its first byte.
+            this._feedSeenAt = Date.now();
             this.man.beginWatch(async (entry, seq) => {
                 const d = entry.type == "plain" ? entry.data : new Uint8Array(decodeBinary(entry.data));
                 let path = entry.path.substring(baseDir.length);

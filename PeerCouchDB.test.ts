@@ -95,3 +95,53 @@ Deno.test("probeHealth keeps a stall non-restart-worthy while CouchDB is unreach
 
     assert(!health.restartWorthy, "restarting cannot fix an unreachable CouchDB — no churn during an outage");
 });
+
+Deno.test("probeHealth restarts the grace window when CouchDB comes back", async () => {
+    // A VPN drop (nightly forced reconnect on the home line) makes the peer stall
+    // for minutes with the backend down. The grace window must not have expired
+    // during that time, or the first probe after the tunnel returns restarts the
+    // service before the watch's own ~10s reconnect can heal it.
+    const peer = makePeer({ feedSeenAt: Date.now() - (STALL_MS + 600_000) });
+    const p = peer as unknown as Record<string, unknown>;
+    p["_everOk"] = true;
+    let backendUp = false;
+    p["checkBackendUp"] = () => Promise.resolve(backendUp);
+
+    await peer.probeHealth(); // outage: stalled, backend down
+    backendUp = true;
+    const first = await peer.probeHealth(); // tunnel just came back
+
+    assert(!first.restartWorthy, "the grace window must start when the backend returns, not during the outage");
+    assert(first.backendUp, "backendUp should reflect the reachable CouchDB");
+});
+
+Deno.test("only a delivered byte counts as feed liveness, not the sent request", async () => {
+    // The hole a blocked-tunnel test exposed: liveness used to be stamped when the
+    // request went out, so a reconnect loop that never gets an answer kept health
+    // green forever. Only bytes coming back may refresh it.
+    const peer = makePeer({});
+    const p = peer as unknown as Record<string, unknown>;
+    const stale = Date.now() - 999_999;
+    p["_feedSeenAt"] = stale;
+
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => { ctrl = c; } });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = () => Promise.resolve(new Response(body));
+    try {
+        const res = await (peer as unknown as {
+            _fetchWithIdleTimeout: (u: string) => Promise<Response>;
+        })._fetchWithIdleTimeout("https://couch.example/db/_changes?feed=continuous");
+        assertEquals(p["_feedSeenAt"] as number, stale, "sending the request must not refresh liveness");
+
+        const reader = res.body!.getReader();
+        ctrl.enqueue(new TextEncoder().encode("\n")); // CouchDB heartbeat
+        await reader.read();
+        assert((p["_feedSeenAt"] as number) > stale, "a delivered byte must refresh liveness");
+
+        ctrl.close();
+        await reader.read(); // drain to completion so the idle timer is cleared
+    } finally {
+        globalThis.fetch = origFetch;
+    }
+});

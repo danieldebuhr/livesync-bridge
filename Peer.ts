@@ -64,7 +64,16 @@ export abstract class Peer {
         if (!this._everOk) return base; // still starting up — not the bridge's fault
         if (this._notOkSince === undefined) this._notOkSince = Date.now();
         const backendUp = await this.checkBackendUp();
-        const restartWorthy = backendUp && (Date.now() - this._notOkSince > Peer.RESTART_GRACE_MS);
+        if (!backendUp) {
+            // Backend down: not our failure, and the grace window must not tick away
+            // meanwhile — otherwise the moment the backend returns we'd already be
+            // past it and restart before the peer gets its own chance to recover
+            // (the watch reconnects ~10s after connectivity comes back). Restarting
+            // that eagerly would mean a pointless restart after every VPN drop.
+            this._notOkSince = undefined;
+            return { ...base, backendUp, restartWorthy: false };
+        }
+        const restartWorthy = Date.now() - this._notOkSince > Peer.RESTART_GRACE_MS;
         return { ...base, backendUp, restartWorthy };
     }
     toLocalPath(path: string) {
