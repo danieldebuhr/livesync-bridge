@@ -50,8 +50,10 @@ export class PeerCouchDB extends Peer {
             // Bypass node:http compatibility shims for Deno, Traefik, and long-polling connections.
             // _changes requests additionally get an idle-timeout: a silently dead TCP
             // connection (suspend/VPN flap) otherwise stalls the live feed forever with
-            // `watching` still true — invisible to health checks. Aborting on idle turns
-            // that into a normal feed error, which the watch's own 10s reconnect handles.
+            // `watching` still true — invisible to health checks. Aborting on idle is
+            // meant to surface as a feed error the watch's own 10s reconnect handles —
+            // but it does not always: see health(), which catches the case where the
+            // abort ends the feed without the library reconnecting at all.
             fetch: (request, init) => this._fetchWithIdleTimeout(request, init),
         });
         // Resume from the persisted checkpoint. If there is none, leave "now" as a
